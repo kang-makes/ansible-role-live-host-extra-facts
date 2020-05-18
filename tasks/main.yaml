@@ -1,0 +1,119 @@
+---
+- name: Check if discovered distribution match with the inventory
+  assert:
+    that: "( ansible_distribution | lower ) in group_names"
+    fail_msg: "Expected to {{ansible_distribution|lower}} to be in those groups: {{ group_names | join(' ') }}"
+    success_msg: "Distribution exists on host's groups"
+
+- name: Get facts for not bootstrapped hosts
+  block:
+  - name: Creating temporary folder to download the host's metadata repo
+    tempfile:
+      state: directory
+    check_mode: no
+    changed_when: no
+    register: facts_temp
+
+  - name: Downloading host's metadata
+    git:
+      repo: "{{ metadata_repo }}/{{ homd_prefix }}-{{ inventory_hostname_short }}"
+      dest: "{{ facts_temp.path }}"
+      accept_hostkey: yes
+      version: "{{ etckeeper_branch }}"
+    ignore_errors: yes
+    changed_when: false
+
+  - name: Gather facts with extra host metadata
+    setup:
+      fact_path: "{{ facts_temp.path }}/ansible/facts.d"
+  when: not ansible_local.bootstrapped | default(false)
+
+- name: Check if this is booted in UEFI mode
+  stat:
+    path: /sys/firmware/efi/efivars
+  register: _uefi
+
+- name: Getting fstab
+  slurp:
+    src: "{% if not ansible_local.bootstrapped | default(false) -%}{{ facts_temp.path }}{% else %}/etc{% endif -%}/fstab"
+  register: fstab_slurp
+
+- name: Parsing fstab file
+  set_fact:
+    fstab: >-
+      {% set dict_keys = [ 'src', 'path', 'fstype', 'opts', 'dump', 'passno' ] -%}
+      {% set dict_values = item.split(' ') -%}
+      {% set mount = dict(dict_keys | zip(dict_values)) -%}
+      {% if not ansible_local.bootstrapped | default(false) -%}
+        {% set mount = mount | combine({"path": root_target + mount["path"]})  -%}
+        {% if 'bind' in mount.opts.split(",") -%}
+          {% set mount = mount | combine({"src": root_target + mount["src"]})  -%}
+        {% endif -%}
+      {% endif -%}
+      {{ fstab | default([]) + [ mount ] }}
+  when: item.split(' ') | length >= 4 and not item[0] == '#'
+  loop: "{{ ( fstab_slurp.content | b64decode).split('\n')
+            | map('regex_replace', '\t', ' ')
+            | map('regex_replace', ' +', ' ')
+            | list }}"
+
+- name: Getting mounted filesystems
+  slurp:
+    src: /proc/mounts
+  register: mounted_slurp
+
+- name: Parsing mounted filesystems
+  set_fact:
+    mounted: "{{ mounted | default([]) + [ dict(
+                [ 'src', 'path', 'fstype', 'opts', 'dump', 'passno' ]
+                | zip( item.split(' ') )
+              )] }}"
+  when: item.split(' ') | length >= 4 and not item[0] == '#'
+  loop: "{{ ( mounted_slurp.content | b64decode).split('\n')
+            | map('regex_replace', '\t', ' ')
+            | map('regex_replace', ' +', ' ')
+            | list }}"
+
+- name: Setting system variables
+  set_fact:
+    system_uses_zfs:  "{{ system_uses_zfs }}"
+    system_uses_uefi: "{{ system_uses_uefi }}"
+    to_mount:         "{{ mounts }}"
+    chroot_mounts:    "{{ chroot }}"
+  vars:
+    chroot:           "{{ chroot_mounts[ansible_distribution | lower] }}"
+    system_uses_uefi: "{{ _uefi.stat.exists }}"
+    system_uses_zfs: >-
+      {{ 'zfs'   in (ansible_local.disk_layout | json_query('[*].step') | default ([])) or
+          'zpool' in (ansible_local.disk_layout | json_query('[*].step') | default ([]))    }}
+    mounts: >-
+      {% set mounts = namespace(return=[], found=false) -%}
+      {% for line in fstab -%}
+        {% set mounts.found = false -%}
+        {% for mount in mounted if not mounts.found -%}
+          {% if line.src  == mount.src and line.path == mount.path -%}
+            {% set mounts.found = true -%}
+          {% endif -%}
+        {% endfor -%}
+        {% if not mounts.found -%}
+          {% set mounts.return = mounts.return + [ line ] -%}
+        {% endif -%}
+      {% endfor -%}
+      {{ mounts.return }}
+
+# TODO: This will not work as espected because of symlinks.
+# line.src           = /dev/disk/by-id/nvme-Samsung_SSD_970_EVO_Plus_250GB_S4EUNF0MA36731H-part1",
+# mount.src          = /dev/nvme0n1p1",
+# prefix + line.path = /target//target/efi",
+# mount.path         = /target/efi",
+#
+# A Python mounttab parser is needed.
+
+
+- name: Cleaning temporary metadata repo
+  file:
+    path: "{{ facts_temp.path }}"
+    state: absent
+  check_mode: no
+  changed_when: false
+  when: not ansible_local.bootstrapped | default(false)

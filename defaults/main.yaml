@@ -1,0 +1,52 @@
+root_target: /target
+
+homd_prefix: homd
+etckeeper_branch: etckeeper
+
+chroot_mounts:
+  archlinux:
+  - src: "proc"
+    path: "/proc"
+    fstype: "proc"
+    opts: "nosuid,noexec,nodev"
+    mount_switch: True
+  - src: "sys"
+    path: "/sys"
+    fstype: "sysfs"
+    opts: "nosuid,noexec,nodev,ro"
+    mount_switch: True
+  - src: "udev"
+    path: "/dev"
+    fstype: "devtmpfs"
+    opts: "mode=0755,nosuid"
+    mount_switch: True
+  - src: "devpts"
+    path: "/dev/pts"
+    fstype: "devpts"
+    opts: "mode=0620,gid=5,nosuid,noexec"
+    mount_switch: True
+  - src: "shm"
+    path: "/dev/shm"
+    fstype: "tmpfs"
+    opts: "mode=1777,nosuid,nodev"
+    mount_switch: True
+  - src: "tmp"
+    path: "/tmp"
+    fstype: "tmpfs"
+    opts: "mode=1777,strictatime,nodev,nosuid"
+    mount_switch: True
+  - src: "efivarfs"
+    path: "/sys/firmware/efi/efivars"
+    fstype: "efivarfs"
+    opts: "nosuid,noexec,nodev"
+    mount_switch: "{{ system_uses_uefi }}"
+  - src: "/run"
+    path: "/run"
+    fstype: "none"
+    opts: "bind"
+    mount_switch: True
+  - src: "/etc/resolv.conf"
+    path: "/etc/resolv.conf"
+    fstype: "none"
+    opts: "bind"
+    mount_switch: True
